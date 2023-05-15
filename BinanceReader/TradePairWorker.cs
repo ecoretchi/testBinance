@@ -9,18 +9,24 @@
     using System.Diagnostics;
     using Newtonsoft.Json;
 
+    class PairInfo
+    {
+        public int cachedCount;
+    }
+
     public class TradePairWorker
     {
         Terminal terminal;
         static List<WebSocket> webSockets = new List<WebSocket>();
         static List<Trade> cachedTrades = new List<Trade>();
-        static Dictionary<string, int> tradesCount = new Dictionary<string, int>();
-        static int MaxCachedTrades = 10000;
+        static Dictionary<string, PairInfo> pairInfo = new Dictionary<string, PairInfo>();
+        static int MaxCachedTrades = 4;
+        static object tradesLocker = new();
 
         public static int TotalCached => cachedTrades.Count;
-        public static int SubscribedPairs => tradesCount.Count;
+        public static int SubscribedPairs => pairInfo.Count;
 
-        
+
         string pair;
 
         public TradePairWorker(Terminal terminal, string pair)
@@ -55,29 +61,43 @@
                 {
                     var color = trade.BuyerMaker == true ? ConsoleColor.Green : ConsoleColor.Red;
                     terminal.WriteLine(color, $"Pair={trade.Pair}, Currency={trade.Currency}, EventID={trade.EventID}, BuyerID={trade.BuyerID}");
-                    cachedTrades.Add(trade);
-                    //check max trade pair at cahce and remove if exceeded
-                    int tradeCount = 0;
-                    if (tradesCount.TryGetValue(trade.Pair, out tradeCount))
+                    lock (tradesLocker)
                     {
-                        ++tradeCount;
-                    }
-                    else
-                    {
-                        tradesCount.Add(trade.Pair, 1);
+                        cachedTrades.Add(trade);
                     }
 
-                    if (tradeCount > MaxCachedTrades)
+                    //check max trade pair at cahce and remove if exceeded
+
+                    if (pairInfo.TryGetValue(trade.Pair, out var pairInf))
                     {
-                        foreach (var cachedTrade in cachedTrades)
+                        pairInf.cachedCount++;
+
+                        if (pairInf.cachedCount > MaxCachedTrades)
                         {
-                            if (trade.Pair == cachedTrade.Pair)
+                            lock (tradesLocker)
                             {
-                                cachedTrades.Remove(cachedTrade);
-                                break;
+
+                                Trade? toRemove = null;
+                                foreach (var cachedTrade in cachedTrades)
+                                {
+                                    if (trade.Pair == cachedTrade.Pair)
+                                    {
+                                        toRemove = cachedTrade;
+                                        break;
+                                    }
+                                }
+                                if (toRemove != null)
+                                {
+                                    cachedTrades.Remove(toRemove);
+                                }
                             }
                         }
                     }
+                    else
+                    {
+                        pairInfo.Add(trade.Pair, new PairInfo() { cachedCount = 1 });
+                    }
+
 
                 }
             };
